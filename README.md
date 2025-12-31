@@ -97,15 +97,17 @@ Automated TequilAPI documentation extractor.
 
 ## Node Configuration
 
-### Bare Metal Node
-- **Port:** 4050
-- **URL:** http://127.0.0.1:4050
+### Bare Metal Node (orion)
+- **Localhost Port:** 4050
+- **LAN Port:** 4449
+- **Localhost URL:** http://127.0.0.1:4050
+- **LAN URL:** http://192.168.254.101:4449
 - **Identity:** 0x6e74d97c16a16caa6e4c3164b40ccc36670b4af8
 - **Services:** wireguard, dvpn, monitoring, data_transfer, scraping
 
 ### Docker Node (orion-alpha)
-- **Port:** 4450
-- **URL:** http://127.0.0.1:4450
+- **Port:** 4100
+- **URL:** http://127.0.0.1:4100
 - **Identity:** 0xb4da7958fb612c71495c72ab646c9da6c8b108fe
 - **Services:** quic_scraping, wireguard, dvpn, monitoring, data_transfer
 
@@ -115,6 +117,58 @@ Automated TequilAPI documentation extractor.
 - **Method:** HTTP Basic Auth
 
 **Security Note:** Default credentials are safe for localhost-only binding. Change them if exposing TequilAPI beyond 127.0.0.1.
+
+## Port Mapping Conventions
+
+To maintain consistency and avoid port conflicts across your Mysterium node infrastructure, follow these port allocation guidelines:
+
+### Port Range Allocation
+
+| Range | Purpose | Capacity | Notes |
+|-------|---------|----------|-------|
+| 4050-4099 | Bare metal installations (localhost) | 50 slots | Primary TequilAPI access |
+| 4449 | Bare metal installations (LAN) | 1 slot | LAN-accessible port for local bare metal |
+| 4100-4199 | Docker containers | 100 slots | Mapped from internal 4449 |
+| 4200-4299 | Remote bare metal nodes | 100 slots | Network-accessible nodes |
+
+### Rationale
+
+- **Clear separation by installation type:** Each deployment method has its own dedicated port range
+- **Sequential numbering within categories:** Easier to track and manage which nodes use which ports
+- **Room for expansion:** Docker range supports up to 100 containers; remote range supports up to 100 remote nodes
+- **No port conflicts:** Non-overlapping ranges prevent accidental port collisions
+
+### Current Configuration
+
+| Node | Type | Port(s) | URL |
+|------|------|---------|-----|
+| orion | Bare metal | 4050 (localhost)<br>4449 (LAN) | http://127.0.0.1:4050<br>http://192.168.254.101:4449 |
+| orion-alpha | Docker | 4100 | http://127.0.0.1:4100 |
+
+### Examples for Future Nodes
+
+When adding new nodes to your infrastructure, assign ports as follows:
+
+**Docker Containers:**
+- docker-node-2: Port 4101
+- docker-node-3: Port 4102
+- docker-node-4: Port 4103
+
+**Remote Bare Metal Nodes:**
+- hill.local: Port 4200
+- server1.local: Port 4201
+- server2.local: Port 4202
+
+**Adding a New Node**
+
+When using `mystnodes.sh node add`, follow this pattern:
+```bash
+# Docker node (next available in 4100-4199 range)
+./mystnodes.sh node add docker-node-2 127.0.0.1 4101 myst mystberry
+
+# Remote bare metal node (next available in 4200-4299 range)
+./mystnodes.sh node add hill.local 192.168.1.100 4200 myst custompass
+```
 
 ## Quick Start
 
@@ -129,11 +183,14 @@ Automated TequilAPI documentation extractor.
 
 ### Access TequilAPI Directly
 ```bash
-# Bare metal node
+# Bare metal node (localhost)
 curl -u myst:mystberry http://127.0.0.1:4050/healthcheck
 
+# Bare metal node (LAN)
+curl -u myst:mystberry http://192.168.254.101:4449/healthcheck
+
 # Docker node
-curl -u myst:mystberry http://127.0.0.1:4450/healthcheck
+curl -u myst:mystberry http://127.0.0.1:4100/healthcheck
 ```
 
 ### Extract Latest API Documentation
