@@ -1,0 +1,720 @@
+#!/bin/bash
+
+#####################################################################
+# MystNodes - Mysterium Network Node Management Tool
+#
+# A unified bash-based tool for managing and monitoring Mysterium
+# Network nodes across multiple instances via TequilAPI
+#
+# Usage:
+#   ./my_myst_nodes                    # Interactive menu mode
+#   ./my_myst_nodes status [all|NODE]  # Check node status
+#   ./my_myst_nodes add NAME HOST      # Add new node
+#   ./my_myst_nodes remove NODE        # Remove node
+#   ./my_myst_nodes list               # List all nodes
+#   ./my_myst_nodes verbose [on|off]   # Toggle verbose mode
+#####################################################################
+
+# ANSI Color Codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# Configuration Files
+CONFIG_DIR="$HOME/.mystnodes"
+NODES_FILE="$CONFIG_DIR/nodes"
+CONFIG_FILE="$CONFIG_DIR/config"
+ONBOARDED_FILE="$CONFIG_DIR/onboarded"
+
+# Default Configuration
+DEFAULT_PORT=4050
+DEFAULT_USER="myst"
+DEFAULT_PASS="mystberry"
+VERBOSE_MODE=false
+
+# Menu State
+MENU_SELECTED=0
+MENU_SIZE=0
+
+#####################################################################
+# Initialization Functions
+#####################################################################
+
+init_config() {
+    # Create config directory if it doesn't exist
+    if [ ! -d "$CONFIG_DIR" ]; then
+        mkdir -p "$CONFIG_DIR"
+    fi
+
+    # Create nodes file if it doesn't exist
+    if [ ! -f "$NODES_FILE" ]; then
+        touch "$NODES_FILE"
+    fi
+
+    # Create config file if it doesn't exist
+    if [ ! -f "$CONFIG_FILE" ]; then
+        cat > "$CONFIG_FILE" <<EOF
+DEFAULT_PORT=$DEFAULT_PORT
+DEFAULT_USER=$DEFAULT_USER
+DEFAULT_PASS=$DEFAULT_PASS
+VERBOSE_MODE=false
+EOF
+    fi
+
+    # Create onboarded file if it doesn't exist
+    if [ ! -f "$ONBOARDED_FILE" ]; then
+        touch "$ONBOARDED_FILE"
+    fi
+
+    # Load configuration
+    load_config
+}
+
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    fi
+}
+
+save_config() {
+    cat > "$CONFIG_FILE" <<EOF
+DEFAULT_PORT=$DEFAULT_PORT
+DEFAULT_USER=$DEFAULT_USER
+DEFAULT_PASS=$DEFAULT_PASS
+VERBOSE_MODE=$VERBOSE_MODE
+EOF
+}
+
+#####################################################################
+# Display Helper Functions
+#####################################################################
+
+print_header() {
+    clear
+    echo -e "${BLUE}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}${BOLD}  MystNodes - Mysterium Network Node Manager${NC}"
+    echo -e "${BLUE}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
+print_section() {
+    echo -e "${CYAN}${BOLD}──────────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}${BOLD}  $1${NC}"
+    echo -e "${CYAN}${BOLD}──────────────────────────────────────────────────────────────${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}✗${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+}
+
+#####################################################################
+# Node Management Functions
+#####################################################################
+
+get_node_list() {
+    if [ ! -f "$NODES_FILE" ]; then
+        echo ""
+        return
+    fi
+    cat "$NODES_FILE"
+}
+
+node_exists() {
+    local name=$1
+    grep -q "^${name}|" "$NODES_FILE" 2>/dev/null
+}
+
+get_node_info() {
+    local name=$1
+    grep "^${name}|" "$NODES_FILE" 2>/dev/null
+}
+
+add_node() {
+    local name=$1
+    local host=$2
+    local port=${3:-$DEFAULT_PORT}
+    local user=${4:-$DEFAULT_USER}
+    local pass=${5:-$DEFAULT_PASS}
+    local api_key=$6
+
+    # Validate inputs
+    if [ -z "$name" ] || [ -z "$host" ]; then
+        print_error "Node name and host are required"
+        return 1
+    fi
+
+    # Check if node already exists
+    if node_exists "$name"; then
+        print_error "Node '$name' already exists"
+        return 1
+    fi
+
+    # Test connection to node
+    print_info "Testing connection to $host:$port..."
+
+    local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
+        "http://${host}:${port}/healthcheck" 2>&1)
+
+    local http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" != "200" ]; then
+        print_error "Cannot connect to node at ${host}:${port} (HTTP $http_code)"
+        print_warning "Please verify the node is running and accessible"
+        return 1
+    fi
+
+    print_success "Connection successful!"
+
+    # Get node version and identity
+    local version=$(echo "$body" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+    local identity=$(curl -s -u "${user}:${pass}" \
+        "http://${host}:${port}/identities" 2>/dev/null | \
+        grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    print_info "Node version: $version"
+    if [ -n "$identity" ]; then
+        print_info "Node identity: $identity"
+    fi
+
+    # Save node configuration
+    echo "${name}|${host}|${port}|${user}|${pass}|${api_key}" >> "$NODES_FILE"
+    print_success "Node '$name' added successfully"
+
+    # Onboard if API key provided
+    if [ -n "$api_key" ]; then
+        onboard_node "$name" "$api_key"
+    fi
+
+    return 0
+}
+
+remove_node() {
+    local name=$1
+
+    if [ -z "$name" ]; then
+        print_error "Node name is required"
+        return 1
+    fi
+
+    if ! node_exists "$name"; then
+        print_error "Node '$name' not found"
+        return 1
+    fi
+
+    # Remove from nodes file
+    grep -v "^${name}|" "$NODES_FILE" > "${NODES_FILE}.tmp"
+    mv "${NODES_FILE}.tmp" "$NODES_FILE"
+
+    # Remove from onboarded file
+    if [ -f "$ONBOARDED_FILE" ]; then
+        grep -v "^${name}$" "$ONBOARDED_FILE" > "${ONBOARDED_FILE}.tmp" 2>/dev/null
+        mv "${ONBOARDED_FILE}.tmp" "$ONBOARDED_FILE"
+    fi
+
+    print_success "Node '$name' removed successfully"
+    return 0
+}
+
+onboard_node() {
+    local name=$1
+    local api_key=$2
+
+    if [ -z "$api_key" ]; then
+        print_error "API key is required for onboarding"
+        return 1
+    fi
+
+    local node_info=$(get_node_info "$name")
+    if [ -z "$node_info" ]; then
+        print_error "Node '$name' not found"
+        return 1
+    fi
+
+    # Parse node info
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+    local port=$(echo "$node_info" | cut -d'|' -f3)
+    local user=$(echo "$node_info" | cut -d'|' -f4)
+    local pass=$(echo "$node_info" | cut -d'|' -f5)
+
+    print_info "Onboarding node '$name' to Mysterium Network..."
+
+    # Set MMN API key via TequilAPI
+    local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
+        -X POST "http://${host}:${port}/mmn/api-key" \
+        -H "Content-Type: application/json" \
+        -d "{\"api_key\":\"${api_key}\"}" 2>&1)
+
+    local http_code=$(echo "$response" | tail -n1)
+
+    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+        print_success "Node onboarded successfully"
+        echo "$name" >> "$ONBOARDED_FILE"
+        return 0
+    else
+        print_error "Failed to onboard node (HTTP $http_code)"
+        return 1
+    fi
+}
+
+list_nodes() {
+    local nodes=$(get_node_list)
+
+    if [ -z "$nodes" ]; then
+        print_warning "No nodes configured"
+        return
+    fi
+
+    print_section "Configured Nodes"
+    echo ""
+
+    while IFS='|' read -r name host port user pass api_key; do
+        local onboarded=""
+        if grep -q "^${name}$" "$ONBOARDED_FILE" 2>/dev/null; then
+            onboarded="${GREEN}[Onboarded]${NC}"
+        fi
+
+        echo -e "  ${BOLD}${name}${NC} $onboarded"
+        echo -e "    Host: ${host}:${port}"
+        echo -e "    Auth: ${user}:${DIM}***${NC}"
+        echo ""
+    done <<< "$nodes"
+}
+
+#####################################################################
+# Node Status Functions
+#####################################################################
+
+check_node_status() {
+    local name=$1
+    local node_info=$(get_node_info "$name")
+
+    if [ -z "$node_info" ]; then
+        print_error "Node '$name' not found"
+        return 1
+    fi
+
+    # Parse node info
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+    local port=$(echo "$node_info" | cut -d'|' -f3)
+    local user=$(echo "$node_info" | cut -d'|' -f4)
+    local pass=$(echo "$node_info" | cut -d'|' -f5)
+
+    echo -e "${CYAN}${BOLD}>>> ${name}${NC}"
+    echo -e "${CYAN}────────────────────────────────────────${NC}"
+
+    # Get health check
+    local response=$(curl -s -u "${user}:${pass}" \
+        "http://${host}:${port}/healthcheck" 2>&1)
+
+    if echo "$response" | grep -q '"uptime"'; then
+        print_success "Node is healthy"
+
+        local version=$(echo "$response" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+        local uptime=$(echo "$response" | grep -o '"uptime":"[^"]*"' | cut -d'"' -f4)
+        local process=$(echo "$response" | grep -o '"process":[0-9]*' | cut -d':' -f2)
+
+        echo -e "  ${BOLD}Version:${NC} $version"
+        echo -e "  ${BOLD}Uptime:${NC} $uptime"
+        echo -e "  ${BOLD}Process:${NC} $process"
+
+        # Verbose mode - show additional details
+        if [ "$VERBOSE_MODE" = "true" ]; then
+            echo ""
+            print_info "Fetching detailed information..."
+
+            # Get identity
+            local identity=$(curl -s -u "${user}:${pass}" \
+                "http://${host}:${port}/identities" 2>/dev/null | \
+                grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+            if [ -n "$identity" ]; then
+                echo -e "  ${BOLD}Identity:${NC} $identity"
+            fi
+
+            # Get location
+            local location=$(curl -s -u "${user}:${pass}" \
+                "http://${host}:${port}/location" 2>/dev/null)
+
+            if echo "$location" | grep -q '"ip"'; then
+                local ip=$(echo "$location" | grep -o '"ip":"[^"]*"' | cut -d'"' -f4)
+                local country=$(echo "$location" | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
+                echo -e "  ${BOLD}IP:${NC} $ip"
+                echo -e "  ${BOLD}Country:${NC} $country"
+            fi
+
+            # Get NAT type
+            local nat=$(curl -s -u "${user}:${pass}" \
+                "http://${host}:${port}/nat/type" 2>/dev/null | \
+                grep -o '"type":"[^"]*"' | cut -d'"' -f4)
+
+            if [ -n "$nat" ]; then
+                echo -e "  ${BOLD}NAT Type:${NC} $nat"
+            fi
+
+            # Get running services
+            local services=$(curl -s -u "${user}:${pass}" \
+                "http://${host}:${port}/services" 2>/dev/null)
+
+            local service_count=$(echo "$services" | grep -c '"id":"' 2>/dev/null || echo "0")
+            echo -e "  ${BOLD}Running Services:${NC} $service_count"
+
+            if [ "$service_count" -gt 0 ]; then
+                echo "$services" | grep -o '"type":"[^"]*"' | cut -d'"' -f4 | while read -r svc; do
+                    echo -e "    - $svc"
+                done
+            fi
+        fi
+    else
+        print_error "Node not responding"
+        echo -e "  ${DIM}Response: $response${NC}"
+    fi
+
+    echo ""
+}
+
+check_all_nodes() {
+    local nodes=$(get_node_list)
+
+    if [ -z "$nodes" ]; then
+        print_warning "No nodes configured"
+        return
+    fi
+
+    while IFS='|' read -r name host port user pass api_key; do
+        check_node_status "$name"
+    done <<< "$nodes"
+}
+
+#####################################################################
+# Interactive Menu Functions
+#####################################################################
+
+show_menu() {
+    print_header
+
+    local menu_items=(
+        "View All Nodes Status"
+        "Add New Node"
+        "Remove Node"
+        "List Configured Nodes"
+        "Toggle Verbose Mode (Currently: $VERBOSE_MODE)"
+        "Exit"
+    )
+
+    MENU_SIZE=${#menu_items[@]}
+
+    echo -e "${BOLD}Main Menu${NC}"
+    echo ""
+
+    for i in "${!menu_items[@]}"; do
+        if [ $i -eq $MENU_SELECTED ]; then
+            echo -e "  ${GREEN}▶ ${menu_items[$i]}${NC}"
+        else
+            echo -e "    ${menu_items[$i]}"
+        fi
+    done
+
+    echo ""
+    echo -e "${DIM}Use ↑/↓ arrow keys to navigate, Enter to select${NC}"
+}
+
+read_menu_input() {
+    local key
+    read -rsn1 key
+
+    if [ "$key" = $'\x1b' ]; then
+        read -rsn2 key
+        case "$key" in
+            '[A') # Up arrow
+                ((MENU_SELECTED--))
+                if [ $MENU_SELECTED -lt 0 ]; then
+                    MENU_SELECTED=$((MENU_SIZE - 1))
+                fi
+                ;;
+            '[B') # Down arrow
+                ((MENU_SELECTED++))
+                if [ $MENU_SELECTED -ge $MENU_SIZE ]; then
+                    MENU_SELECTED=0
+                fi
+                ;;
+        esac
+        return 1
+    elif [ "$key" = "" ]; then
+        # Enter key pressed
+        return 0
+    fi
+
+    return 1
+}
+
+handle_menu_selection() {
+    case $MENU_SELECTED in
+        0) # View All Nodes Status
+            print_header
+            print_section "All Nodes Status"
+            echo ""
+            check_all_nodes
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        1) # Add New Node
+            print_header
+            print_section "Add New Node"
+            echo ""
+
+            read -p "Node name: " node_name
+            read -p "Host (IP or hostname.local): " node_host
+            read -p "Port [$DEFAULT_PORT]: " node_port
+            node_port=${node_port:-$DEFAULT_PORT}
+            read -p "Username [$DEFAULT_USER]: " node_user
+            node_user=${node_user:-$DEFAULT_USER}
+            read -s -p "Password [$DEFAULT_PASS]: " node_pass
+            echo ""
+            node_pass=${node_pass:-$DEFAULT_PASS}
+            read -p "MMN API Key (optional, press Enter to skip): " api_key
+
+            echo ""
+            add_node "$node_name" "$node_host" "$node_port" "$node_user" "$node_pass" "$api_key"
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        2) # Remove Node
+            print_header
+            print_section "Remove Node"
+            echo ""
+            list_nodes
+            echo ""
+            read -p "Node name to remove: " node_name
+            echo ""
+            read -p "Are you sure you want to remove '$node_name'? (y/N): " confirm
+            if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+                remove_node "$node_name"
+            else
+                print_info "Removal cancelled"
+            fi
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        3) # List Configured Nodes
+            print_header
+            list_nodes
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        4) # Toggle Verbose Mode
+            if [ "$VERBOSE_MODE" = "true" ]; then
+                VERBOSE_MODE=false
+                print_info "Verbose mode disabled"
+            else
+                VERBOSE_MODE=true
+                print_info "Verbose mode enabled"
+            fi
+            save_config
+            sleep 1
+            ;;
+        5) # Exit
+            print_header
+            echo -e "${GREEN}Thank you for using MystNodes!${NC}"
+            echo ""
+            exit 0
+            ;;
+    esac
+}
+
+interactive_mode() {
+    init_config
+
+    while true; do
+        show_menu
+        read_menu_input
+        if [ $? -eq 0 ]; then
+            handle_menu_selection
+        fi
+    done
+}
+
+#####################################################################
+# CLI Mode Functions
+#####################################################################
+
+run_cli_mode() {
+    init_config
+
+    local command=$1
+    shift
+
+    case "$command" in
+        status)
+            local target=${1:-all}
+            if [ "$target" = "all" ]; then
+                check_all_nodes
+            else
+                check_node_status "$target"
+            fi
+            ;;
+        add)
+            local name=$1
+            local host=$2
+            local port=${3:-$DEFAULT_PORT}
+            local user=${4:-$DEFAULT_USER}
+            local pass=${5:-$DEFAULT_PASS}
+            local api_key=$6
+            add_node "$name" "$host" "$port" "$user" "$pass" "$api_key"
+            ;;
+        remove)
+            local name=$1
+            remove_node "$name"
+            ;;
+        list)
+            list_nodes
+            ;;
+        verbose)
+            local mode=${1:-toggle}
+            case "$mode" in
+                on)
+                    VERBOSE_MODE=true
+                    save_config
+                    print_success "Verbose mode enabled"
+                    ;;
+                off)
+                    VERBOSE_MODE=false
+                    save_config
+                    print_success "Verbose mode disabled"
+                    ;;
+                toggle)
+                    if [ "$VERBOSE_MODE" = "true" ]; then
+                        VERBOSE_MODE=false
+                        print_success "Verbose mode disabled"
+                    else
+                        VERBOSE_MODE=true
+                        print_success "Verbose mode enabled"
+                    fi
+                    save_config
+                    ;;
+            esac
+            ;;
+        onboard)
+            local name=$1
+            local api_key=$2
+            onboard_node "$name" "$api_key"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            echo -e "${RED}Unknown command: $command${NC}"
+            echo ""
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+show_help() {
+    cat <<EOF
+${BOLD}MystNodes - Mysterium Network Node Manager${NC}
+
+${BOLD}USAGE:${NC}
+  my_myst_nodes                       Start interactive menu mode
+  my_myst_nodes COMMAND [ARGS...]     Run CLI command
+
+${BOLD}COMMANDS:${NC}
+  status [all|NODE]                   Check node status
+  add NAME HOST [PORT] [USER] [PASS] [API_KEY]
+                                      Add new node
+  remove NODE                         Remove node
+  list                                List all configured nodes
+  verbose [on|off|toggle]             Toggle verbose mode
+  onboard NODE API_KEY                Onboard node to MMN
+  help                                Show this help message
+
+${BOLD}EXAMPLES:${NC}
+  # Interactive mode
+  my_myst_nodes
+
+  # Check all nodes
+  my_myst_nodes status all
+
+  # Check specific node
+  my_myst_nodes status mynode
+
+  # Add node with defaults
+  my_myst_nodes add mynode 192.168.1.100
+
+  # Add node with custom port
+  my_myst_nodes add mynode 192.168.1.100 4050
+
+  # Add node with avahi hostname
+  my_myst_nodes add hill hill.local 4050
+
+  # Add node with API key for onboarding
+  my_myst_nodes add mynode 192.168.1.100 4050 myst mystberry YOUR_API_KEY
+
+  # Remove node
+  my_myst_nodes remove mynode
+
+  # List all nodes
+  my_myst_nodes list
+
+  # Enable verbose mode
+  my_myst_nodes verbose on
+
+${BOLD}CONFIGURATION:${NC}
+  Config directory: ~/.mystnodes/
+  Nodes file:       ~/.mystnodes/nodes
+  Config file:      ~/.mystnodes/config
+  Onboarded file:   ~/.mystnodes/onboarded
+
+${BOLD}NODE FORMAT:${NC}
+  NAME|HOST|PORT|USER|PASS|API_KEY
+
+${BOLD}DEFAULT VALUES:${NC}
+  Port:     4050
+  Username: myst
+  Password: mystberry
+
+${BOLD}NOTES:${NC}
+  - Nodes can use IP addresses or .local hostnames (via avahi-daemon)
+  - API key is optional but required for MMN onboarding
+  - Verbose mode shows identity, location, NAT type, and services
+  - All nodes are tested for connectivity before being added
+
+EOF
+}
+
+#####################################################################
+# Main Entry Point
+#####################################################################
+
+main() {
+    # Check if running in CLI mode (arguments provided)
+    if [ $# -eq 0 ]; then
+        # No arguments - run interactive mode
+        interactive_mode
+    else
+        # Arguments provided - run CLI mode
+        run_cli_mode "$@"
+    fi
+}
+
+# Run main function with all arguments
+main "$@"
