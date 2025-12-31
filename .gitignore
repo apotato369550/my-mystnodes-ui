@@ -1,0 +1,258 @@
+# MystNodes UI - Git Ignore File
+
+# ============================================
+# Configuration Files (Sensitive Data)
+# ============================================
+
+# User configuration files (contain credentials)
+.mystnodes_nodes
+.mystnodes_identities
+.mystnodes_config
+.env
+*.env
+.env.*
+
+# Mysterium node configuration backups
+config-backup/
+*.toml.bak
+*.conf.bak
+
+# SSH keys and certificates
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+*.crt
+*.cer
+
+# API keys and secrets
+secrets/
+.secrets/
+api_keys.txt
+credentials.txt
+
+# ============================================
+# Logs and Temporary Files
+# ============================================
+
+# Log files
+*.log
+logs/
+*.log.*
+log/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Bash temporary files
+.bash_history
+.lesshst
+
+# Tmux temporary files
+tmux-client-*.log
+
+# ============================================
+# Generated Documentation (Timestamped)
+# ============================================
+
+# Generated API documentation with timestamps
+tequila_api_*_*.json
+api_comparison_*.txt
+
+# Exported reports and stats
+exports/
+reports/
+*_export_*.txt
+*_export_*.json
+*_export_*.csv
+
+# ============================================
+# Python
+# ============================================
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# ============================================
+# IDE and Editor Files
+# ============================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+
+# ============================================
+# OS Files
+# ============================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# ============================================
+# Test and Development
+# ============================================
+
+# Test output
+test-results/
+test-output/
+*.test
+*.spec
+
+# Coverage reports
+coverage/
+.coverage
+htmlcov/
+
+# Backup files
+*.bak
+*.backup
+backup/
+backups/
+
+# ============================================
+# Node/NPM (Future Web UI)
+# ============================================
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build outputs
+dist/
+build/
+out/
+
+# ============================================
+# Docker
+# ============================================
+
+# Docker volumes
+docker-volumes/
+.dockerignore
+
+# ============================================
+# Git and Version Control
+# ============================================
+
+# Git merge/conflict files
+*.orig
+*.rej
+
+# Patch files
+*.patch
+*.diff
+
+# ============================================
+# Project Specific
+# ============================================
+
+# Historical/archived documentation (keep latest only)
+docs/archive/
+docs/*_old.md
+docs/*_backup.md
+
+# Development sandbox
+sandbox/
+scratch/
+test-scripts/
+
+# Performance profiling
+*.prof
+profile/
+
+# Large binary files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.iso
+*.dmg
+
+# Compressed archives
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# ============================================
+# Exceptions (Keep These)
+# ============================================
+
+# Keep README and documentation
+!README.md
+!CLAUDE.md
+!docs/CLAUDE.md
+!docs/*.md
+
+# Keep scripts
+!*.sh
+
+# Keep reference docs (non-timestamped)
+!docs/TEQUILA_API_REFERENCE.md
+!docs/TEQUILA_API_DOCS.md
+!docs/NODE_ACCESS_GUIDE.md
+!docs/DOCKER_NODE_TROUBLESHOOTING.md
+
+# Keep one example JSON spec (keep the latest one manually)
+!docs/tequila_api_baremetal_20251231_181338.json
