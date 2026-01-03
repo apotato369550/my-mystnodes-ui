@@ -95,6 +95,129 @@ Automated TequilAPI documentation extractor.
 ./extract-tequila-docs.sh
 ```
 
+## Transaction Downloads
+
+Export transaction and settlement history from your Mysterium nodes in CSV or JSON format.
+
+### Quick Start
+
+```bash
+# Download all transactions (both CSV and JSON)
+./my_myst_nodes download-transactions orion
+
+# CSV only
+./my_myst_nodes download-transactions orion --format csv
+
+# JSON with date range filter
+./my_myst_nodes download-transactions orion --format json \
+  --from 2025-01-01T00:00:00Z --to 2025-12-31T23:59:59Z
+
+# Custom output directory
+./my_myst_nodes download-transactions orion --output /tmp/exports
+```
+
+### Interactive Mode
+
+From the main menu, select "Download Transaction Records" to:
+1. Choose a node from your configured nodes
+2. Select export format (CSV, JSON, or Both)
+3. Optionally filter by date range
+4. Export files are saved to `~/.mystnodes/exports/`
+
+### Export Location
+
+Files are saved to: `~/.mystnodes/exports/`
+
+Filename format: `{node_name}_transactions_{timestamp}.{ext}`
+
+Example: `orion_transactions_20260103_143052.csv`
+
+### CSV Format
+
+The CSV export includes complete settlement history with these columns:
+
+- **Date** - Settlement date and time
+- **Type** - Settlement or withdrawal
+- **Amount (MYST)** - Settlement amount in MYST tokens
+- **Fees (MYST)** - Fees paid in MYST tokens
+- **Beneficiary** - Ethereum address receiving funds
+- **Hermes ID** - Hermes service identifier
+- **TX Hash** - Blockchain transaction hash
+- **Status** - Success or failure status
+- **Block Explorer** - Link to blockchain explorer
+
+The CSV also includes a summary footer with:
+- Total number of settlements
+- Total number of withdrawals
+- Total amount settled
+
+### JSON Format
+
+The JSON export includes:
+
+- **metadata** - Node name, export timestamp, date range
+- **settlements** - Complete settlement history array
+- **fees** - Current and historical fee structure
+- **beneficiary** - Beneficiary address information
+
+Example structure:
+```json
+{
+  "metadata": {
+    "node_name": "orion",
+    "export_timestamp": "2026-01-03T14:30:52Z",
+    "date_range": {
+      "from": "2025-01-01T00:00:00Z",
+      "to": "2025-12-31T23:59:59Z"
+    }
+  },
+  "settlements": [...],
+  "fees": {...},
+  "beneficiary": {
+    "address": "0x1234..."
+  }
+}
+```
+
+### Command-Line Options
+
+```
+--format csv|json|both    Export format (default: both)
+--from DATE              Filter from date (RFC3339 format: YYYY-MM-DDTHH:MM:SSZ)
+--to DATE                Filter to date (RFC3339 format: YYYY-MM-DDTHH:MM:SSZ)
+--output PATH            Custom output directory (default: ~/.mystnodes/exports/)
+```
+
+### Date Filtering
+
+Use RFC3339 format for date parameters:
+
+- Full timestamp: `2025-01-01T00:00:00Z`
+- Midnight on specific date: `2025-01-01T00:00:00Z`
+- End of day: `2025-12-31T23:59:59Z`
+
+### Example Use Cases
+
+**Export all transactions for the year:**
+```bash
+./my_myst_nodes download-transactions orion \
+  --from 2025-01-01T00:00:00Z --to 2025-12-31T23:59:59Z
+```
+
+**Export only last month's settlements as CSV:**
+```bash
+./my_myst_nodes download-transactions orion --format csv \
+  --from 2024-12-01T00:00:00Z --to 2024-12-31T23:59:59Z
+```
+
+**Create archive of all node transactions:**
+```bash
+mkdir -p ~/mystnode-exports
+./my_myst_nodes download-transactions orion --output ~/mystnode-exports
+./my_myst_nodes download-transactions hill --output ~/mystnode-exports
+tar -czf mystnode-exports-$(date +%Y%m%d).tar.gz ~/mystnode-exports/
+```
+
 ## Node Configuration
 
 ### Bare Metal Node (orion)

@@ -81,6 +81,29 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 - Warning system when nodes exposed beyond localhost
 - Future: encrypted credential storage
 
+### Implemented Functions
+
+**Transaction Download Functions** (Phase 1 - Complete):
+- **`wei_to_myst(wei)`**: Converts wei to MYST tokens using bc for precision (scale=18)
+- **`validate_rfc3339_date(date)`**: Validates RFC3339 date format (YYYY-MM-DDTHH:MM:SSZ)
+- **`get_node_identity(node_name)`**: Fetches first identity ID for a node via `/identities` endpoint
+- **`get_settlement_history(node_name, date_from, date_to)`**: Fetches all settlement records with pagination support (page_size=50)
+- **`get_transactor_fees(node_name)`**: Fetches current fee structure from `/v2/transactor/fees` with fallback to `/transactor/fees`
+- **`get_identity_beneficiary(node_name, identity_id)`**: Fetches beneficiary address for an identity
+- **`export_transactions_csv(node_name, output_file, settlements_json, fees_json, beneficiary)`**: Formats settlement data as CSV with summary footer
+- **`export_transactions_json(node_name, output_file, settlements_json, fees_json, beneficiary, date_from, date_to)`**: Formats data as structured JSON with metadata
+- **`download_transactions(node_name, format, date_from, date_to, output_path)`**: Main orchestration function for transaction export
+
+**CLI Commands** (Phase 1 - Complete):
+- **`download-transactions NODE [OPTIONS]`**: Download transaction records
+  - `--format csv|json|both` - Export format (default: both)
+  - `--from DATE` - Filter from date (RFC3339 format)
+  - `--to DATE` - Filter to date (RFC3339 format)
+  - `--output PATH` - Custom output directory (default: ~/.mystnodes/exports/)
+
+**Menu Items** (Phase 1 - Complete):
+- **`Download Transaction Records`** - Menu item at index 4 in interactive mode
+
 ### Critical Functions (To Be Implemented)
 
 **Node Health & Status Functions**:
@@ -226,11 +249,12 @@ The test suite will provide interactive verification of all components:
 
 ## Development Roadmap
 
-### Phase 1: Core Node Management (Current)
-- Basic script structure with dual-mode support (interactive + CLI)
-- Node configuration storage and management
-- Health check and status monitoring
-- Simple identity listing
+### Phase 1: Core Node Management & Transaction Downloads (Current)
+- ✅ Basic script structure with dual-mode support (interactive + CLI)
+- ✅ Node configuration storage and management
+- ✅ Health check and status monitoring
+- ✅ Simple identity listing
+- ✅ **Transaction Downloads** - CSV and JSON export with date filtering
 
 ### Phase 2: Identity & Service Management
 - Full identity management (create, unlock, balance)
