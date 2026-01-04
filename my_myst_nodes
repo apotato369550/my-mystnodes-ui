@@ -101,6 +101,29 @@ EOF
 # Display Helper Functions
 #####################################################################
 
+resolve_host() {
+    local host=$1
+    # If host is already an IP, return it
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$host"
+        return
+    fi
+    
+    # Try to resolve
+    local ip=""
+    if command -v getent &> /dev/null; then
+        ip=$(getent hosts "$host" | awk '{ print $1 }' | head -n 1)
+    elif command -v ping &> /dev/null; then
+        ip=$(ping -c 1 "$host" 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    fi
+    
+    if [ -n "$ip" ]; then
+        echo "$ip"
+    else
+        echo "$host"
+    fi
+}
+
 print_header() {
     clear
     echo -e "${BLUE}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
@@ -174,10 +197,12 @@ add_node() {
     fi
 
     # Test connection to node
-    print_info "Testing connection to $host:$port..."
+    # Resolve IP for connection test to bypass TequilAPI restrictions
+    local connection_host=$(resolve_host "$host")
+    print_info "Testing connection to $host ($connection_host:$port)..."
 
     local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        "http://${host}:${port}/healthcheck" 2>&1)
+        "http://${connection_host}:${port}/healthcheck" 2>&1)
 
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
@@ -193,7 +218,7 @@ add_node() {
     # Get node version and identity
     local version=$(echo "$body" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
     local identity=$(curl -s -u "${user}:${pass}" \
-        "http://${host}:${port}/identities" 2>/dev/null | \
+        "http://${connection_host}:${port}/identities" 2>/dev/null | \
         grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
     print_info "Node version: $version"
@@ -261,11 +286,14 @@ onboard_node() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     print_info "Onboarding node '$name' to Mysterium Network..."
 
     # Set MMN API key via TequilAPI
     local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        -X POST "http://${host}:${port}/mmn/api-key" \
+        -X POST "http://${connection_host}:${port}/mmn/api-key" \
         -H "Content-Type: application/json" \
         -d "{\"api_key\":\"${api_key}\"}" 2>&1)
 
@@ -324,12 +352,15 @@ check_node_status() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     echo -e "${CYAN}${BOLD}>>> ${name}${NC}"
     echo -e "${CYAN}────────────────────────────────────────${NC}"
 
     # Get health check
     local response=$(curl -s -u "${user}:${pass}" \
-        "http://${host}:${port}/healthcheck" 2>&1)
+        "http://${connection_host}:${port}/healthcheck" 2>&1)
 
     if echo "$response" | grep -q '"uptime"'; then
         print_success "Node is healthy"
@@ -349,7 +380,7 @@ check_node_status() {
 
             # Get identity
             local identity=$(curl -s -u "${user}:${pass}" \
-                "http://${host}:${port}/identities" 2>/dev/null | \
+                "http://${connection_host}:${port}/identities" 2>/dev/null | \
                 grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
             if [ -n "$identity" ]; then
@@ -358,7 +389,7 @@ check_node_status() {
 
             # Get location
             local location=$(curl -s -u "${user}:${pass}" \
-                "http://${host}:${port}/location" 2>/dev/null)
+                "http://${connection_host}:${port}/location" 2>/dev/null)
 
             if echo "$location" | grep -q '"ip"'; then
                 local ip=$(echo "$location" | grep -o '"ip":"[^"]*"' | cut -d'"' -f4)
@@ -369,7 +400,7 @@ check_node_status() {
 
             # Get NAT type
             local nat=$(curl -s -u "${user}:${pass}" \
-                "http://${host}:${port}/nat/type" 2>/dev/null | \
+                "http://${connection_host}:${port}/nat/type" 2>/dev/null | \
                 grep -o '"type":"[^"]*"' | cut -d'"' -f4)
 
             if [ -n "$nat" ]; then
@@ -378,7 +409,7 @@ check_node_status() {
 
             # Get running services
             local services=$(curl -s -u "${user}:${pass}" \
-                "http://${host}:${port}/services" 2>/dev/null)
+                "http://${connection_host}:${port}/services" 2>/dev/null)
 
             local service_count=$(echo "$services" | grep -c '"id":"' 2>/dev/null || echo "0")
             echo -e "  ${BOLD}Running Services:${NC} $service_count"
@@ -408,6 +439,229 @@ check_all_nodes() {
     while IFS='|' read -r name host port user pass api_key; do
         check_node_status "$name"
     done <<< "$nodes"
+}
+
+#####################################################################
+# Earnings Calculation Functions
+#####################################################################
+
+calculate_earnings() {
+    local node_name=$1
+    local range_seconds=$2 # 0 for all time
+    
+    local node_info=$(get_node_info "$node_name")
+    if [ -z "$node_info" ]; then
+        echo "0"
+        return
+    fi
+
+    # Parse node credentials
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+    local port=$(echo "$node_info" | cut -d'|' -f3)
+    local user=$(echo "$node_info" | cut -d'|' -f4)
+    local pass=$(echo "$node_info" | cut -d'|' -f5)
+
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
+    # Determine date filter
+    local date_from=""
+    if [ "$range_seconds" -gt 0 ]; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS date
+            date_from=$(date -u -v-${range_seconds}S +%Y-%m-%dT%H:%M:%SZ)
+        else
+            # Linux date
+            date_from=$(date -u -d "@$(($(date +%s) - $range_seconds))" +%Y-%m-%dT%H:%M:%SZ)
+        fi
+    fi
+
+    local url="http://${connection_host}:${port}/transactor/settle/history?page_size=100&page=1"
+    if [ -n "$date_from" ]; then
+        url="${url}&date_from=${date_from}"
+    fi
+
+    local response=$(curl -s -u "${user}:${pass}" "$url" 2>&1)
+    
+    # Sum up amounts
+    local total_wei=0
+    
+    # Check if response is valid JSON
+    if echo "$response" | grep -q '"items":'; then
+         # Extract amounts and sum them using awk to avoid shell loop slowness
+        total_wei=$(echo "$response" | grep -o '"amount":[0-9]*' | cut -d':' -f2 | awk '{s+=$1} END {printf "%.0f", s}')
+    fi
+    
+    if [ -z "$total_wei" ]; then
+        total_wei=0
+    fi
+
+    wei_to_myst "$total_wei"
+}
+
+calculate_session_stats() {
+    local node_name=$1
+    local range_seconds=$2 # 0 for all time
+    
+    # We fetch all sessions (or last 31 days) and filter in memory using jq
+    # Since we can't filter by exact time on API side (only date)
+    
+    # Calculate cutoff timestamp
+    local cutoff_ts=0
+    if [ "$range_seconds" -gt 0 ]; then
+        cutoff_ts=$(($(date +%s) - $range_seconds))
+    fi
+    
+    # Fetch sessions for last 32 days to be safe if range is small, 
+    # or just fetch recent ones. For "Total" we need all.
+    # To keep it performant for the summary view, let's limit to last 32 days for the 30d/7d/24h cols
+    # For Total, we might need a separate call or just accept 30d limit for now unless requested.
+    # But user asked for "Total". 
+    # Let's try to fetch 35 days for the columns.
+    
+    local date_from_35d=""
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date_from_35d=$(date -u -v-35d +%Y-%m-%d)
+    else
+        date_from_35d=$(date -u -d "35 days ago" +%Y-%m-%d)
+    fi
+    
+    # If range_seconds is 0 (Total), we don't pass date filter to get everything
+    local sessions_json=""
+    if [ "$range_seconds" -eq 0 ]; then
+        sessions_json=$(get_session_history "$node_name" "")
+    else
+        sessions_json=$(get_session_history "$node_name" "$date_from_35d")
+    fi
+    
+    if [ -z "$sessions_json" ] || [ "$sessions_json" = "[]" ]; then
+        echo "0|0" # Count | Amount
+        return
+    fi
+    
+    # Use jq to filter and sum
+    # input time format: 2026-01-04T06:08:25Z
+    # We need to convert to seconds in jq. 
+    # jq's `fromdateiso8601` parses ISO 8601
+    
+    local stats=$(echo "$sessions_json" | jq -r --argjson cutoff "$cutoff_ts" '
+        [ .[] | select(.created_at | fromdateiso8601 >= $cutoff) ] | 
+        { 
+          count: length, 
+          tokens: (map(.tokens) | add // 0) 
+        } | 
+        "\(.count)|\(.tokens)"
+    ')
+    
+    local count=$(echo "$stats" | cut -d'|' -f1)
+    local tokens_wei=$(echo "$stats" | cut -d'|' -f2)
+    local tokens_myst=$(wei_to_myst "$tokens_wei")
+    
+    echo "${count}|${tokens_myst}"
+}
+
+view_sessions_summary() {
+    print_header
+    print_section "Session Summary (Count | MYST Earned)"
+    echo ""
+
+    local nodes=$(get_node_list)
+    if [ -z "$nodes" ]; then
+        print_warning "No nodes configured"
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    # Header
+    printf "%-12s %-24s %-22s %-22s\n" "NODE" "24H" "7D" "30D"
+    echo "────────────────────────────────────────────────────────────────────────────────"
+
+    while IFS='|' read -r name host port user pass api_key; do
+        # We need to compute stats. 
+        # To avoid multiple API calls per row, let's fetch once for the last 35 days 
+        # and reuse the JSON for 24h, 7d, 30d.
+        
+        local date_from_35d=""
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            date_from_35d=$(date -u -v-35d +%Y-%m-%d)
+        else
+            date_from_35d=$(date -u -d "35 days ago" +%Y-%m-%d)
+        fi
+        
+        local sessions_json=$(get_session_history "$name" "$date_from_35d")
+        
+        if [ -z "$sessions_json" ] || [ "$sessions_json" = "[]" ]; then
+             printf "%-12s %-24s %-22s %-22s\n" "${name:0:11}" "0 | 0.00000000" "0 | 0.00000000" "0 | 0.00000000"
+             continue
+        fi
+
+        # Function to calc stats from existing json
+        calc_from_json() {
+            local seconds=$1
+            local cutoff=$(($(date +%s) - $seconds))
+            echo "$sessions_json" | jq -r --argjson cutoff "$cutoff" '
+                [ .[] | select(.created_at | fromdateiso8601 >= $cutoff) ] | 
+                { count: length, tokens: (map(.tokens) | add // 0) } | 
+                "\(.count)|\(.tokens)"
+            '
+        }
+        
+        # 24H
+        local s24=$(calc_from_json 86400)
+        local c24=$(echo "$s24" | cut -d'|' -f1)
+        local t24=$(wei_to_myst "$(echo "$s24" | cut -d'|' -f2)")
+        t24=$(printf "%.8f" $t24)
+        
+        # 7D
+        local s7d=$(calc_from_json 604800)
+        local c7d=$(echo "$s7d" | cut -d'|' -f1)
+        local t7d=$(wei_to_myst "$(echo "$s7d" | cut -d'|' -f2)")
+        t7d=$(printf "%.8f" $t7d)
+        
+        # 30D
+        local s30d=$(calc_from_json 2592000)
+        local c30d=$(echo "$s30d" | cut -d'|' -f1)
+        local t30d=$(wei_to_myst "$(echo "$s30d" | cut -d'|' -f2)")
+        t30d=$(printf "%.8f" $t30d)
+        
+        printf "%-12s %-24s %-22s %-22s\n" \
+            "${name:0:11}" "${c24} | ${t24}" "${c7d} | ${t7d}" "${c30d} | ${t30d}"
+            
+    done <<< "$nodes"
+    
+    echo ""
+}
+
+view_earnings_summary() {
+    print_header
+    print_section "Earnings Summary (MYST)"
+    echo ""
+
+    local nodes=$(get_node_list)
+    if [ -z "$nodes" ]; then
+        print_warning "No nodes configured"
+        echo ""
+        read -p "Press Enter to continue..."
+        return
+    fi
+
+    printf "%-20s %-12s %-12s %-12s %-12s\n" "NODE" "24H" "7D" "30D" "TOTAL"
+    echo "──────────────────────────────────────────────────────────────────────"
+
+    while IFS='|' read -r name host port user pass api_key; do
+        # Calculate time ranges
+        local e24=$(printf "%.8f" $(calculate_earnings "$name" 86400))
+        local e7d=$(printf "%.8f" $(calculate_earnings "$name" 604800))
+        local e30d=$(printf "%.8f" $(calculate_earnings "$name" 2592000))
+        local etotal=$(printf "%.8f" $(calculate_earnings "$name" 0))
+
+        printf "%-20s %-12s %-12s %-12s %-12s\n" \
+            "${name:0:19}" "$e24" "$e7d" "$e30d" "$etotal"
+            
+    done <<< "$nodes"
+    
+    echo ""
 }
 
 #####################################################################
@@ -448,9 +702,12 @@ get_node_identity() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     # Fetch identities from API
     local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        "http://${host}:${port}/identities" 2>&1)
+        "http://${connection_host}:${port}/identities" 2>&1)
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
 
@@ -480,13 +737,16 @@ get_settlement_history() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     local all_items="[]"
     local page=1
     local total_pages=1
 
     # Fetch all pages
     while [ $page -le $total_pages ]; do
-        local url="http://${host}:${port}/settle/history?page_size=50&page=${page}"
+        local url="http://${connection_host}:${port}/transactor/settle/history?page_size=50&page=${page}"
 
         # Add date filters if provided
         if [ -n "$date_from" ]; then
@@ -530,6 +790,84 @@ get_settlement_history() {
     echo "$all_items"
 }
 
+get_session_history() {
+    local node_name=$1
+    local date_from=$2 # YYYY-MM-DD
+    local date_to=$3   # YYYY-MM-DD
+
+    # Get node info from config
+    local node_info=$(get_node_info "$node_name")
+    if [ -z "$node_info" ]; then
+        return 1
+    fi
+
+    # Parse node credentials
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+    local port=$(echo "$node_info" | cut -d'|' -f3)
+    local user=$(echo "$node_info" | cut -d'|' -f4)
+    local pass=$(echo "$node_info" | cut -d'|' -f5)
+
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
+    local all_items="[]"
+    local page=1
+    local total_pages=1
+
+    # Fetch all pages
+    while [ $page -le $total_pages ]; do
+        local url="http://${connection_host}:${port}/sessions?page_size=100&page=${page}"
+
+        # Add date filters if provided
+        if [ -n "$date_from" ]; then
+            url="${url}&date_from=${date_from}"
+        fi
+        if [ -n "$date_to" ]; then
+            url="${url}&date_to=${date_to}"
+        fi
+
+        local response=$(curl -s -u "${user}:${pass}" "$url" 2>&1)
+        
+        # Check if response is valid JSON
+        if ! echo "$response" | grep -q '"items":'; then
+            print_error "Failed to fetch sessions"
+            return 1
+        fi
+
+        # Extract total_pages from first page only
+        if [ $page -eq 1 ]; then
+            total_pages=$(echo "$response" | grep -o '"total_pages":[0-9]*' | cut -d':' -f2)
+            [ -z "$total_pages" ] && total_pages=1
+        fi
+
+        # Extract and concatenate items
+        local items=$(echo "$response" | grep -o '"items":\[.*\]' | sed 's/"items"://')
+        # Handle trailing metadata by cutting at the last ]
+        items=${items%\}*}
+        
+        # If the grep captured too much (e.g. metadata at end), clean it
+        # Actually, let's use a simpler approach if jq is available (it is per dependencies)
+        if command -v jq &> /dev/null; then
+             items=$(echo "$response" | jq -c '.items')
+        fi
+
+        # If not first page, merge arrays
+        if [ $page -eq 1 ]; then
+            all_items="$items"
+        else
+            # Remove closing bracket from all_items and opening from items, merge
+            # Assuming format is [ ... ]
+            all_items=$(echo "$all_items" | sed 's/]$/,/')
+            items=$(echo "$items" | sed 's/^\[//')
+            all_items="${all_items}${items}"
+        fi
+
+        ((page++))
+    done
+
+    echo "$all_items"
+}
+
 get_transactor_fees() {
     local node_name=$1
 
@@ -545,9 +883,12 @@ get_transactor_fees() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     # Fetch fees from API (try v2 first, fallback to v1)
     local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        "http://${host}:${port}/v2/transactor/fees" 2>&1)
+        "http://${connection_host}:${port}/v2/transactor/fees" 2>&1)
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
 
@@ -558,7 +899,7 @@ get_transactor_fees() {
 
     # Fallback to v1 endpoint
     response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        "http://${host}:${port}/transactor/fees" 2>&1)
+        "http://${connection_host}:${port}/transactor/fees" 2>&1)
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
 
@@ -591,9 +932,12 @@ get_identity_beneficiary() {
     local user=$(echo "$node_info" | cut -d'|' -f4)
     local pass=$(echo "$node_info" | cut -d'|' -f5)
 
+    # Resolve IP
+    local connection_host=$(resolve_host "$host")
+
     # Fetch beneficiary from API
     local response=$(curl -s -w "\n%{http_code}" -u "${user}:${pass}" \
-        "http://${host}:${port}/identities/${identity_id}/beneficiary" 2>&1)
+        "http://${connection_host}:${port}/identities/${identity_id}/beneficiary" 2>&1)
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
 
@@ -705,6 +1049,63 @@ export_transactions_json() {
   "beneficiary": {
     "address": "$beneficiary"
   }
+}
+EOFJ
+}
+
+export_sessions_csv() {
+    local node_name=$1
+    local output_file=$2
+    local sessions_json=$3
+
+    # CSV header
+    {
+        echo "ID,Created At,Consumer ID,Service Type,Consumer Country,Duration (s),Bytes Received,Bytes Sent,Tokens (MYST),Status"
+
+        # Process each session record
+        echo "$sessions_json" | jq -c '.[]' | while read -r item; do
+            local id=$(echo "$item" | jq -r '.id')
+            local created_at=$(echo "$item" | jq -r '.created_at')
+            local consumer_id=$(echo "$item" | jq -r '.consumer_id')
+            local service_type=$(echo "$item" | jq -r '.service_type')
+            local consumer_country=$(echo "$item" | jq -r '.consumer_country')
+            local duration=$(echo "$item" | jq -r '.duration')
+            local bytes_received=$(echo "$item" | jq -r '.bytes_received')
+            local bytes_sent=$(echo "$item" | jq -r '.bytes_sent')
+            local tokens_wei=$(echo "$item" | jq -r '.tokens')
+            local status=$(echo "$item" | jq -r '.status')
+
+            # Convert wei to MYST
+            local tokens_myst=$(wei_to_myst "$tokens_wei")
+
+            # Output CSV row
+            echo "\"$id\",\"$created_at\",\"$consumer_id\",\"$service_type\",\"$consumer_country\",\"$duration\",\"$bytes_received\",\"$bytes_sent\",\"$tokens_myst\",\"$status\""
+        done
+
+    } > "$output_file"
+}
+
+export_sessions_json() {
+    local node_name=$1
+    local output_file=$2
+    local sessions_json=$3
+    local date_from=$4
+    local date_to=$5
+
+    local export_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Build JSON structure
+    cat > "$output_file" <<EOFJ
+{
+  "metadata": {
+    "node_name": "$node_name",
+    "export_timestamp": "$export_timestamp",
+    "date_range": {
+      "from": "${date_from:-null}",
+      "to": "${date_to:-null}"
+    }
+  },
+  "sessions": $sessions_json
 }
 EOFJ
 }
@@ -839,6 +1240,98 @@ download_transactions() {
     return 0
 }
 
+download_sessions() {
+    local node_name=$1
+    local format=${2:-both}
+    local date_from=$3
+    local date_to=$4
+    local output_path=${5:-"$HOME/.mystnodes/exports"}
+
+    # Validate inputs
+    if [ -z "$node_name" ]; then
+        print_error "Node name is required"
+        return 1
+    fi
+
+    if ! node_exists "$node_name"; then
+        print_error "Node '$node_name' not found"
+        return 1
+    fi
+
+    # Create exports directory
+    if ! mkdir -p "$output_path" 2>/dev/null; then
+        print_error "Failed to create export directory: $output_path"
+        return 1
+    fi
+
+    print_info "Fetching session history for node '$node_name'..."
+
+    # Extract YYYY-MM-DD from full timestamps if provided
+    local date_from_short=""
+    local date_to_short=""
+    if [ -n "$date_from" ]; then
+        date_from_short=$(echo "$date_from" | cut -d'T' -f1)
+    fi
+    if [ -n "$date_to" ]; then
+        date_to_short=$(echo "$date_to" | cut -d'T' -f1)
+    fi
+
+    local sessions=$(get_session_history "$node_name" "$date_from_short" "$date_to_short")
+    
+    if [ -z "$sessions" ] || [ "$sessions" = "[]" ]; then
+        print_warning "No sessions found for node '$node_name'"
+        return 0
+    fi
+
+    # Count sessions
+    local count=$(echo "$sessions" | jq '. | length')
+    print_success "Found $count sessions"
+
+    # Generate timestamp for filenames
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local base_filename="${node_name}_sessions_${timestamp}"
+
+    # Export files
+    local csv_file=""
+    local json_file=""
+
+    case "$format" in
+        csv)
+            csv_file="${output_path}/${base_filename}.csv"
+            print_info "Generating CSV export..."
+            export_sessions_csv "$node_name" "$csv_file" "$sessions"
+            if [ -f "$csv_file" ]; then
+                print_success "CSV export created: $csv_file"
+            fi
+            ;;
+        json)
+            json_file="${output_path}/${base_filename}.json"
+            print_info "Generating JSON export..."
+            export_sessions_json "$node_name" "$json_file" "$sessions" "$date_from" "$date_to"
+            if [ -f "$json_file" ]; then
+                print_success "JSON export created: $json_file"
+            fi
+            ;;
+        both)
+            csv_file="${output_path}/${base_filename}.csv"
+            json_file="${output_path}/${base_filename}.json"
+            print_info "Generating CSV export..."
+            export_sessions_csv "$node_name" "$csv_file" "$sessions"
+            print_info "Generating JSON export..."
+            export_sessions_json "$node_name" "$json_file" "$sessions" "$date_from" "$date_to"
+            if [ -f "$csv_file" ]; then
+                print_success "CSV export created: $csv_file"
+            fi
+            if [ -f "$json_file" ]; then
+                print_success "JSON export created: $json_file"
+            fi
+            ;;
+    esac
+
+    print_success "Export completed successfully"
+    return 0
+}
+
 #####################################################################
 # Interactive Menu Functions
 #####################################################################
@@ -852,6 +1345,9 @@ show_menu() {
         "Remove Node"
         "List Configured Nodes"
         "Download Transaction Records"
+        "View Earnings Summary"
+        "Download Session Records"
+        "View Session Summary"
         "Toggle Verbose Mode (Currently: $VERBOSE_MODE)"
         "Exit"
     )
@@ -1024,7 +1520,83 @@ handle_menu_selection() {
             echo ""
             read -p "Press Enter to continue..."
             ;;
-        5) # Toggle Verbose Mode
+        5) # View Earnings Summary
+            view_earnings_summary
+            read -p "Press Enter to continue..."
+            ;;
+        6) # Download Session Records
+            print_header
+            print_section "Download Session Records"
+            echo ""
+
+            # List nodes for selection
+            local nodes=$(get_node_list)
+            if [ -z "$nodes" ]; then
+                print_warning "No nodes configured"
+                echo ""
+                read -p "Press Enter to continue..."
+                return
+            fi
+
+            echo "Available nodes:"
+            echo ""
+            local i=1
+            while IFS='|' read -r name host port user pass api_key; do
+                echo "  $i) $name"
+                ((i++))
+            done <<< "$nodes"
+            echo ""
+
+            read -p "Select node number: " node_num
+
+            # Get node name from selection
+            local selected_node=$(echo "$nodes" | sed -n "${node_num}p" | cut -d'|' -f1)
+
+            if [ -z "$selected_node" ]; then
+                print_error "Invalid selection"
+                echo ""
+                read -p "Press Enter to continue..."
+                return
+            fi
+
+            # Prompt for format
+            echo ""
+            echo "Export format:"
+            echo "  1) CSV only"
+            echo "  2) JSON only"
+            echo "  3) Both (default)"
+            echo ""
+            read -p "Select format [3]: " format_choice
+            format_choice=${format_choice:-3}
+
+            local format="both"
+            case "$format_choice" in
+                1) format="csv" ;;
+                2) format="json" ;;
+                3) format="both" ;;
+            esac
+
+            # Optional date range
+            echo ""
+            read -p "Filter by date range? (y/N): " use_dates
+            local date_from=""
+            local date_to=""
+
+            if [ "$use_dates" = "y" ] || [ "$use_dates" = "Y" ]; then
+                read -p "From date (YYYY-MM-DD or press Enter to skip): " date_from
+                read -p "To date (YYYY-MM-DD or press Enter to skip): " date_to
+            fi
+
+            echo ""
+            download_sessions "$selected_node" "$format" "$date_from" "$date_to"
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        7) # View Session Summary
+            view_sessions_summary
+            read -p "Press Enter to continue..."
+            ;;
+        8) # Toggle Verbose Mode
             if [ "$VERBOSE_MODE" = "true" ]; then
                 VERBOSE_MODE=false
                 print_info "Verbose mode disabled"
@@ -1035,7 +1607,7 @@ handle_menu_selection() {
             save_config
             sleep 1
             ;;
-        6) # Exit
+        9) # Exit
             print_header
             echo -e "${GREEN}Thank you for using MystNodes!${NC}"
             echo ""
@@ -1163,6 +1735,54 @@ run_cli_mode() {
 
             download_transactions "$node" "$format" "$date_from" "$date_to" "$output"
             ;;
+        earnings)
+            view_earnings_summary
+            ;;
+        download-sessions)
+            local node=$1
+            shift
+            local format="both"
+            local date_from=""
+            local date_to=""
+            local output=""
+
+            # Parse flags
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --format)
+                        format=$2
+                        shift 2
+                        ;;
+                    --from)
+                        date_from=$2
+                        shift 2
+                        ;;
+                    --to)
+                        date_to=$2
+                        shift 2
+                        ;;
+                    --output)
+                        output=$2
+                        shift 2
+                        ;;
+                    *)
+                        shift
+                        ;;
+                esac
+            done
+
+            if [ -z "$node" ]; then
+                print_error "Node name required"
+                echo ""
+                show_help
+                exit 1
+            fi
+
+            download_sessions "$node" "$format" "$date_from" "$date_to" "$output"
+            ;;
+        sessions)
+            view_sessions_summary
+            ;;
         help|--help|-h)
             show_help
             ;;
@@ -1193,6 +1813,9 @@ ${BOLD}COMMANDS:${NC}
   onboard NODE API_KEY                Onboard node to MMN
   download-transactions NODE [OPTIONS]
                                       Download transaction records
+  earnings                            View earnings summary for all nodes
+  download-sessions NODE [OPTIONS]    Download session records
+  sessions                            View session summary for all nodes
   help                                Show this help message
 
 ${BOLD}EXAMPLES:${NC}

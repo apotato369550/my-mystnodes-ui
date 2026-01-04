@@ -25,17 +25,63 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Node configurations
-BARE_METAL_NAME="Bare Metal"
-BARE_METAL_URL="http://127.0.0.1:4050"
-BARE_METAL_AUTH="myst:mystberry"
+CONFIG_FILES=("${HOME}/.mystnodes_nodes" "./.mystnodes_nodes")
+NODES_CONFIG=""
 
-DOCKER_NAME="Docker (orion-alpha)"
-DOCKER_URL="http://127.0.0.1:4450"
-DOCKER_AUTH="myst:mystberry"
+for f in "${CONFIG_FILES[@]}"; do
+    if [ -f "$f" ]; then
+        NODES_CONFIG="$f"
+        break
+    fi
+done
+
+if [ -z "$NODES_CONFIG" ]; then
+    # Fallback for first run / no config
+    echo -e "${YELLOW}Warning: No config file found at ${HOME}/.mystnodes_nodes or ./.mystnodes_nodes${NC}"
+    echo -e "${YELLOW}Using default localhost configuration.${NC}"
+    # Create a temporary config for this run
+    NODES_CONFIG=$(mktemp)
+    echo "Bare Metal|http://127.0.0.1:4050|myst:mystberry" >> "$NODES_CONFIG"
+fi
 
 #####################################################################
 # Helper Functions
 #####################################################################
+
+resolve_url_ip() {
+    local url=$1
+    # Extract protocol, host:port
+    local proto="$(echo $url | grep :// | sed -e's,^\(.*://\).*,\1,g')"
+    local url_no_proto="$(echo ${url/$proto/})"
+    local hostport="$(echo $url_no_proto | cut -d/ -f1)"
+    local host="$(echo $hostport | cut -d: -f1)"
+    local port="$(echo $hostport | cut -s -d: -f2)"
+
+    # If host is already an IP, return original URL
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$url"
+        return
+    fi
+
+    # Try to resolve IP
+    local ip=""
+    if command -v getent &> /dev/null; then
+        ip=$(getent hosts "$host" | awk '{ print $1 }' | head -n 1)
+    elif command -v ping &> /dev/null; then
+        ip=$(ping -c 1 "$host" 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    fi
+
+    if [ -n "$ip" ]; then
+        if [ -n "$port" ]; then
+            echo "${proto}${ip}:${port}"
+        else
+            echo "${proto}${ip}"
+        fi
+    else
+        # Could not resolve, return original
+        echo "$url"
+    fi
+}
 
 print_header() {
     echo -e "${BLUE}${BOLD}========================================${NC}"
@@ -186,52 +232,69 @@ check_nat() {
 # Command Handlers
 #####################################################################
 
+process_nodes() {
+    local action=$1
+    while IFS='|' read -r name url auth || [ -n "$name" ]; do
+        # Skip empty lines or comments
+        [[ "$name" =~ ^#.*$ ]] && continue
+        [[ -z "$name" ]] && continue
+        # Trim whitespace
+        name=$(echo "$name" | xargs)
+        url=$(echo "$url" | xargs)
+        auth=$(echo "$auth" | xargs)
+        
+        # Resolve Hostname to IP to bypass TequilAPI restrictions
+        resolved_url=$(resolve_url_ip "$url")
+        
+        $action "$name" "$resolved_url" "$auth"
+    done < "$NODES_CONFIG"
+}
+
 cmd_status() {
     print_header "Mysterium Node Status Check"
-    check_health "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_health "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+    process_nodes check_health
 }
 
 cmd_identities() {
     print_header "Node Identities"
-    check_identities "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_identities "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+    process_nodes check_identities
 }
 
 cmd_services() {
     print_header "Running Services"
-    check_services "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_services "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+    process_nodes check_services
 }
 
 cmd_location() {
     print_header "Node Locations"
-    check_location "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_location "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+    process_nodes check_location
 }
 
 cmd_nat() {
     print_header "NAT Type Check"
-    check_nat "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_nat "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+    process_nodes check_nat
 }
 
 cmd_full() {
     print_header "Full Node Status Report"
 
-    check_health "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_identities "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_services "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_location "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
-    check_nat "$BARE_METAL_NAME" "$BARE_METAL_URL" "$BARE_METAL_AUTH"
+    while IFS='|' read -r name url auth || [ -n "$name" ]; do
+        [[ "$name" =~ ^#.*$ ]] && continue
+        [[ -z "$name" ]] && continue
+        name=$(echo "$name" | xargs)
+        url=$(echo "$url" | xargs)
+        auth=$(echo "$auth" | xargs)
 
-    echo ""
+        # Resolve Hostname to IP
+        resolved_url=$(resolve_url_ip "$url")
 
-    check_health "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
-    check_identities "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
-    check_services "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
-    check_location "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
-    check_nat "$DOCKER_NAME" "$DOCKER_URL" "$DOCKER_AUTH"
+        check_health "$name" "$resolved_url" "$auth"
+        check_identities "$name" "$resolved_url" "$auth"
+        check_services "$name" "$resolved_url" "$auth"
+        check_location "$name" "$resolved_url" "$auth"
+        check_nat "$name" "$resolved_url" "$auth"
+        echo ""
+    done < "$NODES_CONFIG"
 }
 
 show_help() {
@@ -248,9 +311,9 @@ show_help() {
     echo "  full         - Full detailed status"
     echo "  help         - Show this help message"
     echo ""
-    echo "Node Configuration:"
-    echo "  Bare Metal:  $BARE_METAL_URL"
-    echo "  Docker:      $DOCKER_URL"
+    echo "Configuration:"
+    echo "  Reading nodes from: $NODES_CONFIG"
+    echo "  Format: Name|URL|Auth"
 }
 
 #####################################################################
