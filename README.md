@@ -220,6 +220,39 @@ tar -czf mystnode-exports-$(date +%Y%m%d).tar.gz ~/mystnode-exports/
 
 ## Node Configuration
 
+### Making Nodes Accessible on LAN
+
+By default, TequilAPI listens only on `127.0.0.1` (localhost). To manage nodes from other devices on your network (LAN), you must configure them to listen on all interfaces (`0.0.0.0`).
+
+**1. Access the Node**
+SSH into your node (e.g., `babylon`):
+```bash
+ssh user@babylon.local
+```
+
+**2. Update Bind Address**
+Configure TequilAPI to accept external connections:
+```bash
+myst config set tequilapi.address 0.0.0.0
+```
+
+**3. Update Security (CRITICAL)**
+Exposing the API makes it accessible to anyone on your network. You **must** change the default credentials:
+```bash
+myst config set tequilapi.auth.username <new_username>
+myst config set tequilapi.auth.password <strong_password>
+```
+
+**4. Restart the Service**
+Apply changes by restarting the node:
+```bash
+# For bare metal (systemd)
+sudo systemctl restart myst
+
+# For Docker
+docker restart myst
+```
+
 ### Bare Metal Node (orion)
 - **Localhost Port:** 4050
 - **LAN Port:** 4449
@@ -372,6 +405,7 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 - ✅ Basic project structure
 - ✅ Node configuration and access
 - ✅ Health check and status monitoring
+- ✅ Core management script (`my_myst_nodes`)
 - 🚧 Configuration storage system
 - 🚧 Simple identity listing
 
@@ -419,7 +453,7 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 git clone https://github.com/apotato369550/my-mystnodes-ui.git
 cd my-mystnodes-ui
 chmod +x *.sh
-./check-nodes.sh status
+./my_myst_nodes
 ```
 
 **Future:** Installation script will handle dependencies and configuration
@@ -528,6 +562,11 @@ docker ps | grep myst            # Docker
 curl -u myst:mystberry http://127.0.0.1:4050/healthcheck
 ```
 
+### "HTTP 403 Forbidden" on .local Hostnames
+Mysterium nodes restrict which hostnames can access the API. If you see this error when accessing via `babylon.local`:
+- **Fix:** Access via IP address (e.g., `192.168.x.x`) instead of hostname.
+- **Better Fix:** Use `my_myst_nodes`, which automatically resolves `.local` hostnames to IPs for you.
+
 ### Docker Node Issues
 See [docs/DOCKER_NODE_TROUBLESHOOTING.md](docs/DOCKER_NODE_TROUBLESHOOTING.md) for:
 - TequilAPI binding configuration
@@ -547,6 +586,7 @@ chmod +x *.sh  # Make scripts executable
 - Node status checker utility
 - Docker node configuration fix
 - Comprehensive documentation
+- `my_myst_nodes` interactive manager
 
 ## License
 

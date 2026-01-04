@@ -8,27 +8,37 @@ MystNodes UI is a unified bash-based tool for managing and monitoring Mysterium 
 
 Unlike homelab-manager which uses SSH for remote execution, MystNodes UI communicates with nodes through their TequilAPI HTTP endpoints, supporting both bare-metal and Docker-based Mysterium node installations.
 
-## Key Commands (Planned)
+## Key Commands
 
-### Running the Application
+### Current Utilities
 
-**Interactive Mode (Default)**:
+**Interactive Node Manager**:
 ```bash
-./mystnodes.sh
+./my_myst_nodes
 ```
 
-**CLI Mode**:
+**Check Node Status**:
 ```bash
-./mystnodes.sh help                         # Show help
-./mystnodes.sh status all                   # Check all node statuses
-./mystnodes.sh earnings all                 # View earnings across all nodes
-./mystnodes.sh node add NAME HOST PORT      # Add a new node
-./mystnodes.sh identities NODE              # List identities for a node
+./check-nodes.sh status                     # Quick health check (requires config)
+./check-nodes.sh full                       # Full detailed report
+./check-nodes.sh identities                 # List identities
+./check-nodes.sh services                   # Show services
+./check-nodes.sh location                   # Show node locations
+./check-nodes.sh nat                        # Check NAT type
 ```
 
-### Running Tests
+**Download Transactions**:
 ```bash
-./test-mystnodes.sh
+./my_myst_nodes download-transactions NODE [OPTIONS]
+  --format csv|json|both    Export format (default: both)
+  --from DATE              Filter from date (RFC3339 format)
+  --to DATE                Filter to date (RFC3339 format)
+  --output PATH            Custom output directory
+```
+
+**Extract API Documentation**:
+```bash
+./extract-tequila-docs.sh
 ```
 
 ## Architecture
@@ -41,24 +51,27 @@ The application will store its configuration in the user's home directory:
 - **`~/.mystnodes_identities`**: Cached identity information for quick access
 - **`~/.mystnodes_config`**: Global configuration (default credentials, refresh intervals, etc.)
 
-### Main Script Structure (Planned: `mystnodes.sh`)
+### Main Script Structure (`my_myst_nodes`)
 
-The script will follow homelab-manager's dual-mode architecture:
+The script follows homelab-manager's dual-mode architecture:
 
 **Mode Selection** (Entry Point):
-- Checks if CLI arguments provided: if yes, runs `run_cli_mode()`, if no, enters interactive menu loop
+- Checks if CLI arguments provided: if yes, runs CLI mode, if no, enters interactive menu loop
+- Supports colorized output with ANSI escape codes
+- Intelligent node configuration file detection
 
 **Interactive Mode**:
 1. **Menu System**: Arrow-key navigation with menu state tracking
-2. **Node Dashboard**: Real-time status of all configured nodes
-3. **Identity Management**: View, create, and unlock identities
-4. **Earnings Tracking**: Aggregate earnings across all nodes
-5. **Service Control**: Start/stop provider services
-6. **Session Monitoring**: View active sessions and statistics
+2. **Node Dashboard**: Display configured nodes with connection status
+3. **Node Management**: Add, remove, and manage node entries
+4. **Node Status Check**: Query health, identity, location, and NAT type
+5. **Onboarding**: Configure MMN API keys for new nodes
+6. **Transaction Download**: Export settlement history as CSV or JSON
+7. **Node Configuration**: Persist nodes to `~/.mystnodes_nodes`
 
 **CLI Mode**:
 - Parses command arguments and dispatches to appropriate handlers
-- Supports commands: `status`, `earnings`, `identities`, `services`, `sessions`, `node`, `config`, `help`
+- Supports commands: `add-node`, `check-node`, `onboard-node`, `download-transactions`, `help`
 - Returns exit codes and formatted output suitable for scripts
 
 ### TequilAPI Integration
@@ -81,7 +94,21 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 - Warning system when nodes exposed beyond localhost
 - Future: encrypted credential storage
 
-### Implemented Functions
+### Implemented Functions in `my_myst_nodes`
+
+**Helper & Display Functions**:
+- **`resolve_host(host)`**: Converts .local hostnames to IP addresses, bypassing TequilAPI hostname restrictions
+- **`print_header()`**: Displays styled header with borders
+- **`print_info(message)`**, **`print_success(message)`**, **`print_error(message)`**: Colorized output helpers
+- **`show_menu()`**: Arrow-key navigation for interactive menu
+
+**Node Management Functions** (Phase 1):
+- **`get_node_info(node_name)`**: Retrieves stored node configuration from file
+- **`list_all_nodes()`**: Displays all configured nodes with status indicators
+- **`add_node()`**: Interactive node addition with connectivity validation
+- **`remove_node()`**: Remove node from configuration
+- **`onboard_node()`**: Configure MMN API keys and enable provider mode
+- **`check_node_status()`**: Fetch and display node health, identity, location, NAT type
 
 **Transaction Download Functions** (Phase 1 - Complete):
 - **`wei_to_myst(wei)`**: Converts wei to MYST tokens using bc for precision (scale=18)
@@ -94,7 +121,14 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 - **`export_transactions_json(node_name, output_file, settlements_json, fees_json, beneficiary, date_from, date_to)`**: Formats data as structured JSON with metadata
 - **`download_transactions(node_name, format, date_from, date_to, output_path)`**: Main orchestration function for transaction export
 
+**Earnings Calculation Functions** (Phase 1 - In Progress):
+- **`calculate_earnings(node_name, range_seconds)`**: Compute earnings for time range (0 for all-time)
+- **`get_earnings_stats(node_name)`**: Fetch provider stats including total earnings and uptime
+
 **CLI Commands** (Phase 1 - Complete):
+- **`add-node`**: Add a new node with connectivity test
+- **`check-node NODE`**: Check single node status
+- **`onboard-node NODE API_KEY`**: Configure node for provider mode
 - **`download-transactions NODE [OPTIONS]`**: Download transaction records
   - `--format csv|json|both` - Export format (default: both)
   - `--from DATE` - Filter from date (RFC3339 format)
@@ -102,15 +136,15 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
   - `--output PATH` - Custom output directory (default: ~/.mystnodes/exports/)
 
 **Menu Items** (Phase 1 - Complete):
-- **`Download Transaction Records`** - Menu item at index 4 in interactive mode
+- List Nodes
+- Add Node
+- Remove Node
+- Check Node Status
+- Onboard Node
+- Download Transaction Records
+- Exit
 
-### Critical Functions (To Be Implemented)
-
-**Node Health & Status Functions**:
-- **`check_node_health(node_name, api_url, auth)`**: Queries `/healthcheck` endpoint
-- **`get_node_status(node_name)`**: Retrieves uptime, version, build info
-- **`check_all_nodes()`**: Iterates through configured nodes and reports health
-- **`get_nat_type(node_name)`**: Queries `/nat/type` for NAT traversal status
+### Critical Functions (To Be Implemented in Phase 2+)
 
 **Identity Management Functions**:
 - **`list_identities(node_name)`**: Queries `/identities` endpoint
@@ -128,12 +162,6 @@ curl -u "$USERNAME:$PASSWORD" "http://$HOST:$PORT/endpoint"
 - **`list_sessions(node_name)`**: Queries `/sessions` for session history
 - **`get_active_connections(node_name)`**: Shows current active connections
 - **`get_session_stats(node_name)`**: Aggregates data transfer statistics
-
-**Node Management Functions**:
-- **`add_node(name, host, port, username, password)`**: Adds new node to configuration with connectivity validation
-- **`remove_node(name)`**: Removes node from configuration
-- **`test_node_connection(host, port, username, password)`**: Validates API accessibility
-- **`update_node_credentials(node_name, new_username, new_password)`**: Updates stored credentials
 
 **Dashboard Functions**:
 - **`view_dashboard()`**: Creates real-time dashboard with node status, earnings, sessions
@@ -249,12 +277,15 @@ The test suite will provide interactive verification of all components:
 
 ## Development Roadmap
 
-### Phase 1: Core Node Management & Transaction Downloads (Current)
+### Phase 1: Core Node Management & Transaction Downloads (Current - ~50% Complete)
 - ✅ Basic script structure with dual-mode support (interactive + CLI)
-- ✅ Node configuration storage and management
+- ✅ Node configuration storage and management (`~/.mystnodes_nodes`)
 - ✅ Health check and status monitoring
-- ✅ Simple identity listing
+- ✅ Node connectivity testing with hostname resolution (.local to IP)
+- ✅ Onboarding workflow with MMN API key configuration
 - ✅ **Transaction Downloads** - CSV and JSON export with date filtering
+- 🚧 Earnings calculation functions (partially implemented)
+- 🚧 Configuration file detection (fallback to defaults)
 
 ### Phase 2: Identity & Service Management
 - Full identity management (create, unlock, balance)
