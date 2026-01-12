@@ -31,6 +31,7 @@ CONFIG_DIR="$HOME/.mystnodes"
 NODES_FILE="$CONFIG_DIR/nodes"
 CONFIG_FILE="$CONFIG_DIR/config"
 ONBOARDED_FILE="$CONFIG_DIR/onboarded"
+LOGS_DIR="$CONFIG_DIR/logs"
 
 # Default Configuration
 DEFAULT_PORT=4050
@@ -76,6 +77,11 @@ EOF
     local EXPORTS_DIR="$CONFIG_DIR/exports"
     if [ ! -d "$EXPORTS_DIR" ]; then
         mkdir -p "$EXPORTS_DIR"
+    fi
+
+    # Create logs directory if it doesn't exist
+    if [ ! -d "$LOGS_DIR" ]; then
+        mkdir -p "$LOGS_DIR"
     fi
 
     # Load configuration
@@ -265,6 +271,81 @@ remove_node() {
     return 0
 }
 
+setup_ssh_keys() {
+    local ssh_key="$HOME/.ssh/id_ed25519"
+
+    # Check if SSH key exists
+    if [ ! -f "$ssh_key" ]; then
+        print_info "SSH key not found. Generating new Ed25519 key..."
+        mkdir -p "$HOME/.ssh"
+        ssh-keygen -t ed25519 -f "$ssh_key" -N "" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            print_success "SSH key generated: $ssh_key"
+            return 0
+        else
+            print_error "Failed to generate SSH key"
+            return 1
+        fi
+    else
+        print_success "SSH key already exists: $ssh_key"
+        return 0
+    fi
+}
+
+onboard_ssh_for_node() {
+    local name=$1
+    local node_info=$(get_node_info "$name")
+
+    if [ -z "$node_info" ]; then
+        print_error "Node '$name' not found"
+        return 1
+    fi
+
+    # Parse node info
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+
+    # Ensure SSH key exists
+    if ! setup_ssh_keys; then
+        return 1
+    fi
+
+    local ssh_key="$HOME/.ssh/id_ed25519"
+
+    # Get current user
+    local current_user=$(whoami)
+
+    print_info "Setting up SSH access for $name ($host)..."
+    print_info "Using username: $current_user"
+    echo ""
+    read -p "Is '$current_user' the correct username on $host? (y/N): " confirm
+
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        read -p "Enter correct username: " current_user
+    fi
+
+    print_info "This will prompt for your password on $host..."
+    echo ""
+
+    # Use ssh-copy-id to install public key
+    if ssh-copy-id -i "$ssh_key" "${current_user}@${host}" 2>/dev/null; then
+        print_success "SSH key installed on $host"
+
+        # Test SSH connection
+        print_info "Testing SSH connection..."
+        if ssh -o ConnectTimeout=5 -o PasswordAuthentication=no -o BatchMode=yes \
+            "${current_user}@${host}" "echo 'SSH connection successful'" 2>/dev/null; then
+            print_success "SSH connection test passed"
+            return 0
+        else
+            print_error "SSH connection test failed"
+            return 1
+        fi
+    else
+        print_error "Failed to install SSH key on $host"
+        return 1
+    fi
+}
+
 onboard_node() {
     local name=$1
     local api_key=$2
@@ -331,6 +412,169 @@ list_nodes() {
         echo -e "    Auth: ${user}:${DIM}***${NC}"
         echo ""
     done <<< "$nodes"
+}
+
+#####################################################################
+# Mysterium Service Control Functions
+#####################################################################
+
+enable_mysterium_service() {
+    local node_name=$1
+    local node_info=$(get_node_info "$node_name")
+
+    if [ -z "$node_info" ]; then
+        echo "FAIL|$node_name|Node not found"
+        return 1
+    fi
+
+    # Parse node info
+    local host=$(echo "$node_info" | cut -d'|' -f2)
+
+    print_info "Connecting to $node_name ($host)..."
+
+    # Execute command via SSH with key-based auth and no password prompts
+    # BatchMode=yes prevents password prompts, ConnectTimeout limits wait time
+    # < /dev/null prevents stdin consumption in loops
+    local response=$(ssh \
+        -o ConnectTimeout=10 \
+        -o StrictHostKeyChecking=accept-new \
+        -o PasswordAuthentication=no \
+        -o PubkeyAuthentication=yes \
+        -o BatchMode=yes \
+        "$host" \
+        "sudo systemctl enable mysterium-node && sudo systemctl start mysterium-node" < /dev/null 2>&1)
+
+    local ssh_exit=$?
+
+    if [ $ssh_exit -eq 0 ]; then
+        print_success "Successfully enabled and started mysterium-node on $node_name"
+        echo "SUCCESS|$node_name|Mysterium node enabled and started"
+        return 0
+    else
+        print_error "Failed to enable mysterium-node on $node_name"
+        echo "FAIL|$node_name|$response"
+        return 1
+    fi
+}
+
+select_nodes_for_mysterium() {
+    local nodes=$(get_node_list)
+
+    if [ -z "$nodes" ]; then
+        print_warning "No nodes configured" >&2
+        return 1
+    fi
+
+    print_section "Enable Mysterium on Nodes" >&2
+    echo "" >&2
+    echo "Select nodes (enter node numbers separated by space, or 'all'):" >&2
+    echo "" >&2
+
+    local i=1
+    declare -a node_names
+    declare -a node_list_array
+
+    while IFS='|' read -r name host port user pass api_key; do
+        echo "  $i) $name ($host)" >&2
+        node_names[$i]=$name
+        node_list_array+=("$name")
+        ((i++))
+    done <<< "$nodes"
+
+    echo "" >&2
+    read -p "Enter selection (e.g., '1 2' or 'all'): " selection
+
+    if [ "$selection" = "all" ]; then
+        printf '%s\n' "${node_list_array[@]}"
+    else
+        # Parse individual selections
+        for num in $selection; do
+            if [ -n "${node_names[$num]}" ]; then
+                echo "${node_names[$num]}"
+            fi
+        done
+    fi
+}
+
+enable_mysterium_on_nodes() {
+    local nodes_to_enable="$1"  # String with newline-separated node names
+    local log_file="$LOGS_DIR/enable_mysterium_$(date +%Y%m%d_%H%M%S).log"
+
+    if [ -z "$nodes_to_enable" ]; then
+        print_error "No nodes selected"
+        return 1
+    fi
+
+    print_header
+    print_section "Enabling Mysterium Service"
+    echo ""
+    echo "Node Selection:"
+    echo "$nodes_to_enable" | sed 's/^/  - /'
+    echo ""
+    read -p "Are you sure? (y/N): " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        print_info "Operation cancelled"
+        return 0
+    fi
+
+    echo ""
+    print_info "Starting enable operation... (This may take a moment)"
+    echo ""
+
+    # Initialize log file
+    {
+        echo "Mysterium Service Enable Operation"
+        echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+    } > "$log_file"
+
+    local success_count=0
+    local fail_count=0
+    local results=""
+
+    # Process each node
+    while IFS= read -r node_name; do
+        # Skip empty lines and lines with only whitespace
+        node_name=$(echo "$node_name" | xargs)
+        [ -z "$node_name" ] && continue
+        # Skip lines that are not valid node names (contain special chars/pipes)
+        if [[ ! "$node_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            continue
+        fi
+
+        result=$(enable_mysterium_service "$node_name")
+        echo "$result" >> "$log_file"
+
+        if echo "$result" | grep -q "^SUCCESS"; then
+            ((success_count++))
+        else
+            ((fail_count++))
+        fi
+
+        results="${results}${result}\n"
+    done <<< "$nodes_to_enable"
+
+    # Append summary to log
+    {
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Summary:"
+        echo "  Successful: $success_count"
+        echo "  Failed: $fail_count"
+        echo "Completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "$log_file"
+
+    # Display summary
+    echo ""
+    print_section "Operation Complete"
+    echo ""
+    echo "Results Summary:"
+    echo "  ✓ Successful: $success_count"
+    echo "  ✗ Failed: $fail_count"
+    echo ""
+    print_info "Full log saved to: $log_file"
+    echo ""
 }
 
 #####################################################################
@@ -1344,6 +1588,8 @@ show_menu() {
         "Add New Node"
         "Remove Node"
         "List Configured Nodes"
+        "Setup SSH on Node"
+        "Enable Mysterium on Nodes"
         "Download Transaction Records"
         "View Earnings Summary"
         "Download Session Records"
@@ -1452,7 +1698,33 @@ handle_menu_selection() {
             echo ""
             read -p "Press Enter to continue..."
             ;;
-        4) # Download Transaction Records
+        4) # Setup SSH on Node
+            print_header
+            print_section "Setup SSH on Node"
+            echo ""
+            list_nodes
+            echo ""
+            read -p "Node name to setup SSH: " node_name
+            echo ""
+            if [ -n "$node_name" ]; then
+                onboard_ssh_for_node "$node_name"
+            else
+                print_error "Node name is required"
+            fi
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        5) # Enable Mysterium on Nodes
+            local nodes_selected=$(select_nodes_for_mysterium)
+            if [ -n "$nodes_selected" ]; then
+                enable_mysterium_on_nodes "$nodes_selected"
+                read -p "Press Enter to continue..."
+            else
+                echo ""
+                read -p "Press Enter to continue..."
+            fi
+            ;;
+        6) # Download Transaction Records
             print_header
             print_section "Download Transaction Records"
             echo ""
@@ -1520,11 +1792,11 @@ handle_menu_selection() {
             echo ""
             read -p "Press Enter to continue..."
             ;;
-        5) # View Earnings Summary
+        7) # View Earnings Summary
             view_earnings_summary
             read -p "Press Enter to continue..."
             ;;
-        6) # Download Session Records
+        8) # Download Session Records
             print_header
             print_section "Download Session Records"
             echo ""
@@ -1592,11 +1864,11 @@ handle_menu_selection() {
             echo ""
             read -p "Press Enter to continue..."
             ;;
-        7) # View Session Summary
+        9) # View Session Summary
             view_sessions_summary
             read -p "Press Enter to continue..."
             ;;
-        8) # Toggle Verbose Mode
+        10) # Toggle Verbose Mode
             if [ "$VERBOSE_MODE" = "true" ]; then
                 VERBOSE_MODE=false
                 print_info "Verbose mode disabled"
@@ -1607,7 +1879,7 @@ handle_menu_selection() {
             save_config
             sleep 1
             ;;
-        9) # Exit
+        11) # Exit
             print_header
             echo -e "${GREEN}Thank you for using MystNodes!${NC}"
             echo ""
@@ -1692,6 +1964,16 @@ run_cli_mode() {
             local name=$1
             local api_key=$2
             onboard_node "$name" "$api_key"
+            ;;
+        onboard-ssh)
+            local name=$1
+            if [ -z "$name" ]; then
+                print_error "Node name required"
+                echo ""
+                show_help
+                exit 1
+            fi
+            onboard_ssh_for_node "$name"
             ;;
         download-transactions)
             local node=$1
@@ -1783,6 +2065,33 @@ run_cli_mode() {
         sessions)
             view_sessions_summary
             ;;
+        enable-mysterium)
+            local target=${1:-}
+            if [ "$target" = "--all" ]; then
+                # Enable on all nodes
+                local all_nodes=$(get_node_list | cut -d'|' -f1)
+                if [ -z "$all_nodes" ]; then
+                    print_error "No nodes configured"
+                    exit 1
+                fi
+                enable_mysterium_on_nodes "$all_nodes"
+            elif [ -n "$target" ]; then
+                # Enable on specific node(s)
+                if node_exists "$target"; then
+                    enable_mysterium_on_nodes "$target"
+                else
+                    print_error "Node '$target' not found"
+                    echo ""
+                    show_help
+                    exit 1
+                fi
+            else
+                print_error "Node name or --all flag required"
+                echo ""
+                show_help
+                exit 1
+            fi
+            ;;
         help|--help|-h)
             show_help
             ;;
@@ -1810,7 +2119,9 @@ ${BOLD}COMMANDS:${NC}
   remove NODE                         Remove node
   list                                List all configured nodes
   verbose [on|off|toggle]             Toggle verbose mode
+  onboard-ssh NODE                    Setup SSH key-based auth on node
   onboard NODE API_KEY                Onboard node to MMN
+  enable-mysterium NODE | --all       Enable and start mysterium-node service
   download-transactions NODE [OPTIONS]
                                       Download transaction records
   earnings                            View earnings summary for all nodes
@@ -1849,6 +2160,18 @@ ${BOLD}EXAMPLES:${NC}
   # Enable verbose mode
   my_myst_nodes verbose on
 
+  # Setup SSH key-based auth on a node
+  my_myst_nodes onboard-ssh mynode
+
+  # Onboard node to Mysterium Network
+  my_myst_nodes onboard mynode YOUR_API_KEY
+
+  # Enable mysterium-node on specific node
+  my_myst_nodes enable-mysterium mynode
+
+  # Enable mysterium-node on all configured nodes
+  my_myst_nodes enable-mysterium --all
+
   # Download all transactions (both CSV and JSON)
   my_myst_nodes download-transactions orion
 
@@ -1874,6 +2197,7 @@ ${BOLD}CONFIGURATION:${NC}
   Config file:      ~/.mystnodes/config
   Onboarded file:   ~/.mystnodes/onboarded
   Exports directory: ~/.mystnodes/exports/
+  Logs directory:   ~/.mystnodes/logs/
 
 ${BOLD}NODE FORMAT:${NC}
   NAME|HOST|PORT|USER|PASS|API_KEY
@@ -1888,6 +2212,14 @@ ${BOLD}NOTES:${NC}
   - API key is optional but required for MMN onboarding
   - Verbose mode shows identity, location, NAT type, and services
   - All nodes are tested for connectivity before being added
+  - SSH setup (onboard-ssh) creates Ed25519 keys and installs public keys on nodes
+  - enable-mysterium requires SSH access with key-based auth and passwordless sudo
+  - Operation logs are saved to ~/.mystnodes/logs/ for troubleshooting
+
+${BOLD}SSH SETUP WORKFLOW:${NC}
+  1. onboard-ssh NODE  - Install SSH keys on each node
+  2. onboard NODE KEY  - Configure node with MMN API key
+  3. enable-mysterium NODE | --all  - Enable mysterium service
 
 EOF
 }
